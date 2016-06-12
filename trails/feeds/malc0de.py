@@ -5,9 +5,11 @@ Copyright (c) 2014-2016 Miroslav Stampar (@stamparm)
 See the file 'LICENSE' for copying permission
 """
 
+import re
+
 from core.common import retrieve_content
 
-__url__ = "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/malc0de.ipset"
+__url__ = "https://malc0de.com/bl/ZONES"
 __check__ = "malc0de"
 __info__ = "malware distribution"
 __reference__ = "malc0de.com"
@@ -17,10 +19,7 @@ def fetch():
     content = retrieve_content(__url__)
 
     if __check__ in content:
-        for line in content.split('\n'):
-            line = line.strip()
-            if not line or line.startswith('#') or '.' not in line:
-                continue
-            retval[line] = (__info__, __reference__)
+        for match in re.finditer(r'(?i)zone\s+"([^"]+)"\s+{', content):
+            retval[match.group(1)] = (__info__, __reference__)
 
     return retval

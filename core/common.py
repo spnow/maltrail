@@ -12,32 +12,33 @@ import re
 import sqlite3
 import StringIO
 import subprocess
-import threading
 import urllib2
 import zipfile
 import zlib
 
 from core.addr import addr_to_int
 from core.addr import int_to_addr
+from core.settings import CHECK_CONNECTION_URL
+from core.settings import CDN_RANGES
 from core.settings import NAME
 from core.settings import IPCAT_SQLITE_FILE
 from core.settings import STATIC_IPCAT_LOOKUPS
 from core.settings import TIMEOUT
 from core.settings import TRAILS_FILE
 from core.settings import WHITELIST
+from core.settings import WHITELIST_RANGES
 from core.settings import WORST_ASNS
 from core.trailsdict import TrailsDict
 
-_ipcat_cursor = {}
 _ipcat_cache = {}
 
-def retrieve_content(url, data=None):
+def retrieve_content(url, data=None, headers=None):
     """
     Retrieves page content from given URL
     """
 
     try:
-        req = urllib2.Request("".join(url[i].replace(' ', "%20") if i > url.find('?') else url[i] for i in xrange(len(url))), data, {"User-agent": NAME, "Accept-encoding": "gzip, deflate"})
+        req = urllib2.Request("".join(url[i].replace(' ', "%20") if i > url.find('?') else url[i] for i in xrange(len(url))), data, headers or {"User-agent": NAME, "Accept-encoding": "gzip, deflate"})
         resp = urllib2.urlopen(req, timeout=TIMEOUT)
         retval = resp.read()
         encoding = resp.headers.get("Content-Encoding")
@@ -45,7 +46,7 @@ def retrieve_content(url, data=None):
         if encoding:
             if encoding.lower() == "deflate":
                 data = StringIO.StringIO(zlib.decompress(retval, -15))
-            else:
+            elif encoding.lower() == "gzip":
                 data = gzip.GzipFile("", "rb", 9, StringIO.StringIO(retval))
             retval = data.read()
     except Exception, ex:
@@ -74,24 +75,19 @@ def ipcat_lookup(address):
         retval = _ipcat_cache[address]
     else:
         retval = ""
-        thread = threading.currentThread()
-        cursor = _ipcat_cursor.get(thread)
 
-        if cursor is None:
-            if os.path.isfile(IPCAT_SQLITE_FILE):
-                cursor = _ipcat_cursor[thread] = sqlite3.connect(IPCAT_SQLITE_FILE, isolation_level=None).cursor()
-            else:
-                return None
+        if os.path.isfile(IPCAT_SQLITE_FILE):
+            with sqlite3.connect(IPCAT_SQLITE_FILE, isolation_level=None) as conn:
+                cursor = conn.cursor()
+                try:
+                    _ = addr_to_int(address)
+                    cursor.execute("SELECT name FROM ranges WHERE start_int <= ? AND end_int >= ?", (_, _))
+                    _ = cursor.fetchone()
+                    retval = str(_[0]) if _ else retval
+                except:
+                    raise ValueError("[x] invalid IP address '%s'" % address)
 
-        try:
-            _ = addr_to_int(address)
-            cursor.execute("SELECT name FROM ranges WHERE start_int <= ? AND end_int >= ?", (_, _))
-            _ = cursor.fetchone()
-            retval = str(_[0]) if _ else retval
-        except:
-            raise ValueError("[x] invalid IP address '%s'" % address)
-
-        _ipcat_cache[address] = retval
+                _ipcat_cache[address] = retval
 
     return retval
 
@@ -99,12 +95,29 @@ def worst_asns(address):
     if not address:
         return None
 
-    _ = addr_to_int(address)
-    for prefix, mask, name in WORST_ASNS.get(address.split('.')[0], {}):
-        if _ & mask == prefix:
-            return name
+    try:
+        _ = addr_to_int(address)
+        for prefix, mask, name in WORST_ASNS.get(address.split('.')[0], {}):
+            if _ & mask == prefix:
+                return name
+    except (IndexError, ValueError):
+        pass
 
     return None
+
+def cdn_ip(address):
+    if not address:
+        return False
+
+    try:
+        _ = addr_to_int(address)
+        for prefix, mask in CDN_RANGES.get(address.split('.')[0], {}):
+            if _ & mask == prefix:
+                return True
+    except (IndexError, ValueError):
+        pass
+
+    return False
 
 def check_sudo():
     """
@@ -173,6 +186,24 @@ def get_regex(items):
 
     return regex
 
+def check_connection():
+    return len(retrieve_content(CHECK_CONNECTION_URL) or "") > 0
+
+def check_whitelisted(trail):
+    if trail in WHITELIST:
+        return True
+
+    if trail and trail[0].isdigit():
+        try:
+            _ = addr_to_int(trail)
+            for prefix, mask in WHITELIST_RANGES:
+                if _ & mask == prefix:
+                    return True
+        except (IndexError, ValueError):
+            pass
+
+    return False
+
 def load_trails(quiet=False):
     if not quiet:
         print "[i] loading trails..."
@@ -184,9 +215,9 @@ def load_trails(quiet=False):
             with open(TRAILS_FILE, "rb") as f:
                 reader = csv.reader(f, delimiter=',', quotechar='\"')
                 for row in reader:
-                    if row:
+                    if row and len(row) == 3:
                         trail, info, reference = row
-                        if trail not in WHITELIST:
+                        if not check_whitelisted(trail):
                             retval[trail] = (info, reference)
 
         except Exception, ex:

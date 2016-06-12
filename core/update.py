@@ -9,6 +9,7 @@ import csv
 import glob
 import inspect
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -19,6 +20,8 @@ sys.dont_write_bytecode = True
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))  # to enable calling from current directory too
 
 from core.addr import addr_to_int
+from core.common import cdn_ip
+from core.common import check_whitelisted
 from core.common import load_trails
 from core.common import retrieve_content
 from core.settings import config
@@ -31,10 +34,10 @@ from core.settings import HIGH_PRIORITY_REFERENCES
 from core.settings import IPCAT_CSV_FILE
 from core.settings import IPCAT_SQLITE_FILE
 from core.settings import IPCAT_URL
+from core.settings import PROXIES
 from core.settings import ROOT_DIR
 from core.settings import TRAILS_FILE
 from core.settings import USERS_DIR
-from core.settings import WHITELIST
 
 def _chown(filepath):
     if not subprocess.mswindows and os.path.exists(filepath):
@@ -43,10 +46,10 @@ def _chown(filepath):
         except Exception, ex:
             print "[x] '%s'" % ex
 
-def _fopen_trails(mode):
-    retval = open(TRAILS_FILE, mode)
+def _fopen(filepath, mode="rb"):
+    retval = open(filepath, mode)
     if "w+" in mode:
-        _chown(TRAILS_FILE)
+        _chown(filepath)
     return retval
 
 def update_trails(server=None, force=False):
@@ -63,19 +66,19 @@ def update_trails(server=None, force=False):
         if not _:
             exit("[!] unable to retrieve data from '%s'" % server)
         else:
-            with _fopen_trails("w+b") as f:
+            with _fopen(TRAILS_FILE, "w+b") as f:
                 f.write(_)
             trails = load_trails()
 
-    trail_files = []
+    trail_files = set()
     for dirpath, dirnames, filenames in os.walk(os.path.abspath(os.path.join(ROOT_DIR, "trails"))) :
         for filename in filenames:
-            trail_files.append(os.path.abspath(os.path.join(dirpath, filename)))
+            trail_files.add(os.path.abspath(os.path.join(dirpath, filename)))
 
     if config.CUSTOM_TRAILS_DIR:
         for dirpath, dirnames, filenames in os.walk(os.path.abspath(os.path.join(ROOT_DIR, os.path.expanduser(config.CUSTOM_TRAILS_DIR)))) :
             for filename in filenames:
-                trail_files.append(os.path.abspath(os.path.join(dirpath, filename)))
+                trail_files.add(os.path.abspath(os.path.join(dirpath, filename)))
 
     try:
         if not os.path.isdir(USERS_DIR):
@@ -117,11 +120,13 @@ def update_trails(server=None, force=False):
                     try:
                         results = function()
                         for item in results.items():
+                            if item[0].startswith("www.") and '/' not in item[0]:
+                                item = [item[0][len("www."):], item[1]]
                             if item[0] in trails:
                                 if item[0] not in duplicates:
                                     duplicates[item[0]] = set((trails[item[0]][1],))
                                 duplicates[item[0]].add(item[1][1])
-                            if not (item[0] in trails and (any(_ in item[1][0] for _ in LOW_PRIORITY_INFO_KEYWORDS) or trails[item[0]][1] in HIGH_PRIORITY_REFERENCES)) or item[1][1] in HIGH_PRIORITY_REFERENCES or any(_ in item[1][0] for _ in HIGH_PRIORITY_INFO_KEYWORDS):
+                            if not (item[0] in trails and (any(_ in item[1][0] for _ in LOW_PRIORITY_INFO_KEYWORDS) or trails[item[0]][1] in HIGH_PRIORITY_REFERENCES)) or (item[1][1] in HIGH_PRIORITY_REFERENCES and "history" not in item[1][0]) or any(_ in item[1][0] for _ in HIGH_PRIORITY_INFO_KEYWORDS):
                                 trails[item[0]] = item[1]
                         if not results and "abuse.ch" not in module.__url__:
                             print "[x] something went wrong during remote data retrieval ('%s')" % module.__url__
@@ -132,11 +137,28 @@ def update_trails(server=None, force=False):
         for key in trails.keys():
             if key not in trails:
                 continue
+            if not key or re.search(r"\A(?i)\.?[a-z]+\Z", key) and not any(_ in trails[key][1] for _ in ("custom", "static")):
+                del trails[key]
+                continue
+            if re.search(r"\A\d+\.\d+\.\d+\.\d+\Z", key):
+                if any(_ in trails[key][0] for _ in ("parking site", "sinkhole")) and key in duplicates:
+                    del duplicates[key]
+                if trails[key][0] == "malware":
+                    trails[key] = ("potential malware site", trails[key][1])
+            if trails[key][0] == "ransomware":
+                trails[key] = ("ransomware (malware)", trails[key][1])
+            if key.startswith("www.") and '/' not in key:
+                _ = trails[key]
+                del trails[key]
+                key = key[len("www."):]
+                if key:
+                    trails[key] = _
             if '?' in key:
                 _ = trails[key]
                 del trails[key]
                 key = key.split('?')[0]
-                trails[key] = _
+                if key:
+                    trails[key] = _
             if '//' in key:
                 _ = trails[key]
                 del trails[key]
@@ -149,12 +171,16 @@ def update_trails(server=None, force=False):
                 trails[key] = _
             if key in duplicates:
                 _ = trails[key]
-                trails[key] = (_[0], "%s (+%s)" % (_[1], ','.join(sorted(duplicates[key] - set((_[1],))))))
+                others = sorted(duplicates[key] - set((_[1],)))
+                if others and " (+" not in _[1]:
+                    trails[key] = (_[0], "%s (+%s)" % (_[1], ','.join(others)))
 
         read_whitelist()
 
         for key in trails.keys():
-            if key in WHITELIST or any(key.startswith(_) for _ in BAD_TRAIL_PREFIXES):
+            if check_whitelisted(key) or any(key.startswith(_) for _ in BAD_TRAIL_PREFIXES):
+                del trails[key]
+            elif re.search(r"\A\d+\.\d+\.\d+\.\d+\Z", key) and cdn_ip(key):
                 del trails[key]
             else:
                 try:
@@ -166,7 +192,7 @@ def update_trails(server=None, force=False):
 
         try:
             if trails:
-                with _fopen_trails("w+b") as f:
+                with _fopen(TRAILS_FILE, "w+b") as f:
                     writer = csv.writer(f, delimiter=',', quotechar='\"', quoting=csv.QUOTE_MINIMAL)
                     for trail in trails:
                         writer.writerow((trail, trails[trail][0], trails[trail][1]))
@@ -174,7 +200,7 @@ def update_trails(server=None, force=False):
         except Exception, ex:
             print "[x] something went wrong during trails file write '%s' ('%s')" % (TRAILS_FILE, ex)
 
-    print "[i] update finished%s" % (40 * " ")
+        print "[i] update finished%s" % (40 * " ")
 
     return trails
 
@@ -191,7 +217,10 @@ def update_ipcat(force=False):
         print "[i] updating ipcat database..."
 
         try:
-            urllib.urlretrieve(IPCAT_URL, IPCAT_CSV_FILE)
+            if PROXIES:
+                urllib.URLopener(PROXIES).urlretrieve(IPCAT_URL, IPCAT_CSV_FILE)
+            else:
+                urllib.urlretrieve(IPCAT_URL, IPCAT_CSV_FILE)
         except Exception, ex:
             print "[x] something went wrong during retrieval of '%s' ('%s')" % (IPCAT_URL, ex)
 
@@ -226,6 +255,31 @@ def main():
         update_ipcat()
     except KeyboardInterrupt:
         print "\r[x] Ctrl-C pressed"
+    else:
+        if "-r" in sys.argv:
+            results = []
+            with _fopen(TRAILS_FILE) as f:
+                for line in f:
+                    if line and line[0].isdigit():
+                        items = line.split(',', 2)
+                        if re.search(r"\A[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\Z", items[0]):
+                            ip = items[0]
+                            reputation = 1
+                            lists = items[-1]
+                            if '+' in lists:
+                                reputation = 2 + lists.count(',')
+                            if "(custom)" in lists:
+                                reputation -= 1
+                            if "(static)" in lists:
+                                reputation -= 1
+                            reputation -= max(0, lists.count("prox") + lists.count("maxmind") + lists.count("spys.ru") + lists.count("rosinstrument") - 1)      # remove duplicate proxy hits
+                            reputation -= max(0, lists.count("blutmagie") + lists.count("torproject") - 1)                                                      # remove duplicate tor hits
+                            if reputation > 0:
+                                results.append((ip, reputation))
+            results = sorted(results, key=lambda _: _[1], reverse=True)
+            for result in results:
+                sys.stderr.write("%s\t%s\n" % (result[0], result[1]))
+                sys.stderr.flush()
 
 if __name__ == "__main__":
     main()

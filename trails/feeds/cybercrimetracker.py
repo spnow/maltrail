@@ -10,7 +10,7 @@ import re
 from core.common import retrieve_content
 
 __url__ = "http://cybercrime-tracker.net/all.php"
-__check__ = "admin.php"
+__check__ = "cp.php?m=login"
 __info__ = "malware"
 __reference__ = "cybercrime-tracker.net"
 
@@ -33,7 +33,7 @@ def fetch():
             if ':' in line:
                 line = line.split(':')[0]
             if re.search(r"\A\d+\.\d+\.\d+\.\d+\Z", line):
-                retval[line] = (__info__, __reference__)
+                retval[line] = ("potential malware site", __reference__)
             else:
                 retval[line] = (__info__, __reference__)
 

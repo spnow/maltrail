@@ -5,6 +5,7 @@
 
 # Reference: https://rules.emergingthreats.net/
 
+\(\) { :;
 2search
 404search
 91cast
@@ -229,6 +230,7 @@ lineguide
 linkrunner
 live enterprise suite
 lmaokaazldr
+\bloader
 lobo lunar
 \Alocus
 \bloic
@@ -255,7 +257,6 @@ microgaming install program
 \Amicrosoft internet explorer\Z
 mirar_
 missigua locator
-mj12bot
 morfeus
 mot-mpx220
 moxilla
@@ -275,6 +276,7 @@ msiecrawler
 \bmsndown
 \bmuseon
 \bmy session
+myagent
 \bmyie\b
 mypcdoc
 mysqloit
@@ -323,8 +325,10 @@ pilipinas
 pinballcorp
 pint_agency
 pivim
+pockethttp
 poller
 \Apopup
+printf ["']
 privoxy
 proscan-down
 proxydown
@@ -458,6 +462,7 @@ virusheat
 virusprotectpro
 vmozilla
 vomba
+vulnerable
 vulture
 w00tw00t
 w3af

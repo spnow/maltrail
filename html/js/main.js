@@ -35,10 +35,14 @@ var LONG_TRAIL_THRESHOLD = 40;
 var OTHER_COLOR = "#999";
 var THREAT_INFIX = "~>";
 var FLOOD_THREAT_PREFIX = "...";
+var DGA_THREAT_INFIX = " dga ";  // set by sensor (based on known DGAs)
+var DNS_EXHAUSTION_THREAT_INFIX = " dns exhaustion ";  // set by sensor
 var DATA_PARTS_DELIMITER = ", ";
 var SUSPICIOUS_THREAT_INFIX = "suspicious";
 var HEURISTIC_THREAT_INFIX = "heuristic";
 var FLOOD_UID_SUFFIX = "F0";
+var DGA_UID_SUFFIX = "D0";
+var DNS_EXHAUSTION_UID_SUFFIX = "N0";
 var DEFAULT_STATUS_BORDER = "1px solid #a8a8a8";
 var DEFAULT_FONT_FAMILY = "Verdana, Geneva, sans-serif";
 var LOG_COLUMNS = { TIME: 0, SENSOR: 1, SRC_IP: 2, SRC_PORT: 3, DST_IP: 4, DST_PORT: 5, PROTO: 6, TYPE: 7, TRAIL: 8, INFO: 9, REFERENCE: 10 };
@@ -51,6 +55,7 @@ var SEARCH_TIP_URL = "https://duckduckgo.com/?q=${query}";
 //var SEARCH_TIP_URL = "https://www.google.com/cse?cx=011750002002865445766%3Ay5klxdomj78&ie=UTF-8&q=${query}";
 var DAY_SUFFIXES = { 1: "st", 2: "nd", 3: "rd" };
 var DOT_COLUMNS = [ LOG_COLUMNS.SENSOR, LOG_COLUMNS.SRC_PORT, LOG_COLUMNS.SRC_IP, LOG_COLUMNS.DST_IP, LOG_COLUMNS.DST_PORT, LOG_COLUMNS.TRAIL, LOG_COLUMNS.PROTO ];
+var DATA_CONDENSING_COLUMNS = [ LOG_COLUMNS.SRC_PORT, LOG_COLUMNS.DST_IP, LOG_COLUMNS.DST_PORT, LOG_COLUMNS.PROTO ];
 var SPARKLINE_COLOR = "#ff0000";
 var NONCE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 var NONCE_LENGTH = 12;
@@ -61,11 +66,19 @@ var PREFERRED_TRAIL_COLORS = { DNS: "#3366cc", IP: "#dc3912", URL: "#ffad33", UA
 var SEVERITY = { LOW: 1, MEDIUM: 2, HIGH: 3 };
 var SEVERITY_COLORS = { 1: "#8ba8c0", 2: "#f0ad4e", 3: "#d9534f"};
 var CHART_TOOLTIP_FORMAT = "<%= datasetLabel %>: <%= value %>";
-var INFO_SEVERITY_KEYWORDS = { "malware": SEVERITY.HIGH, "reputation": SEVERITY.LOW, "attacker": SEVERITY.LOW, "spammer": SEVERITY.LOW, "compromised": SEVERITY.LOW, "crawler": SEVERITY.LOW, "scanning": SEVERITY.LOW }
+var INFO_SEVERITY_KEYWORDS = { "malware": SEVERITY.HIGH, "ransomware": SEVERITY.HIGH, "reputation": SEVERITY.LOW, "attacker": SEVERITY.LOW, "spammer": SEVERITY.LOW, "compromised": SEVERITY.LOW, "crawler": SEVERITY.LOW, "scanning": SEVERITY.LOW }
 var STORAGE_KEY_ACTIVE_STATUS_BUTTON = "STORAGE_KEY_ACTIVE_STATUS_BUTTON";
 var COMMA_ENCODE_TRAIL_TYPES = { UA: true, URL: true};
+var TOOLTIP_FOLDING_REGEX = /([^\s]{60})/g;
+var REPLACE_SINGLE_CLOUD_WITH_BRACES = false;
 
 for (var column in LOG_COLUMNS) if (LOG_COLUMNS.hasOwnProperty(column)) LOG_COLUMNS_SIZE++;
+
+var _ = {};
+for (var i = 0; i < DATA_CONDENSING_COLUMNS.length; i++) {
+    _[DATA_CONDENSING_COLUMNS[i]] = true;
+}
+DATA_CONDENSING_COLUMNS = _;
 
 window.onkeydown = function(event) {
     CTRL_DATES.length = 0;
@@ -373,6 +386,10 @@ function escapeRegExp(str) {
 function getThreatUID(threat) {  // e.g. 192.168.0.1~>shv4.no-ip.biz
     if (threat.startsWith(FLOOD_THREAT_PREFIX))
         return pad(threat.hashCode().toString(16), 6).substr(0, 6) + FLOOD_UID_SUFFIX;
+    else if (threat.indexOf(DGA_THREAT_INFIX) > -1)
+        return pad(threat.hashCode().toString(16), 6).substr(0, 6) + DGA_UID_SUFFIX;
+    else if (threat.indexOf(DNS_EXHAUSTION_THREAT_INFIX) > -1)
+        return pad(threat.hashCode().toString(16), 6).substr(0, 6) + DNS_EXHAUSTION_UID_SUFFIX;
     else
         return pad(threat.hashCode().toString(16), 8);
 }
@@ -467,6 +484,7 @@ function init(url, from, to) {
         chunk: function(results) {
             var title = document.title.replace(/\s?\.\s?/g, '.');
             var parts = title.split('.');
+            var total = results.data.length;
             var _ = _CHUNK_COUNT % parts.length;
             var trailSources = { };
 
@@ -478,21 +496,23 @@ function init(url, from, to) {
             document.title = parts.join('.');
             _CHUNK_COUNT += 1;
 
-            for (var i = 0; i < results.data.length; i++) {
+            for (var i = 0; i < total; i++) {
                 var data = results.data[i];
-                var trail = data[LOG_COLUMNS.TRAIL];
-                var type = data[LOG_COLUMNS.TYPE];
 
                 if (data.length < LOG_COLUMNS_SIZE)
                     continue;
 
-                if (type in COMMA_ENCODE_TRAIL_TYPES)
-                    trail = trail.replace(/\,/g, "&#44;");
-
-                var _ = trail.replace(/\\\(/g, "&#40;").replace(/\\\)/g, "&#41;").replace(/\([^)]+\)/g, "");
+                var trail = data[LOG_COLUMNS.TRAIL];
+                var type = data[LOG_COLUMNS.TYPE];
 
                 if (!(type in TRAIL_TYPES))
                     TRAIL_TYPES[type] = PREFERRED_TRAIL_COLORS[type] || getHashColor(type);
+
+                if (type in COMMA_ENCODE_TRAIL_TYPES)
+                    trail = trail.replace(/\,/g, "&#44;");
+
+                trail = data[LOG_COLUMNS.TRAIL] = trail.replace(/\\\(/g, "&#40;").replace(/\\\)/g, "&#41;")
+                var _ = trail.replace(/\([^)]+\)/g, "");
 
                 if (!(_ in trailSources))
                     trailSources[_] = {};
@@ -512,7 +532,7 @@ function init(url, from, to) {
             }
 
             for (var i = 0; i < results.data.length; i++) {
-                var data = results.data[i], threat_text, match, _;
+                var data = results.data[i], threat_text, threat_data, match, _;
 
                 if (data.length < LOG_COLUMNS_SIZE)
                     continue;
@@ -527,10 +547,16 @@ function init(url, from, to) {
                 _ = charTrim(charTrim(_.replace(/\([^)]+\)/g, ""), ' '), '.');
 
                 var flood = _ in _FLOOD_TRAILS;
+                var dga = info.indexOf(DGA_THREAT_INFIX) > -1;
+                var dns_exhaustion = info.indexOf(DNS_EXHAUSTION_THREAT_INFIX) > -1;
                 var heuristic = reference.indexOf(HEURISTIC_THREAT_INFIX) > -1;
 
-                if (flood)
+                if (dns_exhaustion)
+                    threat_text = info + THREAT_INFIX + _;
+                else if (flood)
                     threat_text = FLOOD_THREAT_PREFIX + THREAT_INFIX + _;
+                else if (dga)
+                    threat_text = src_ip + THREAT_INFIX + info;
                 else if (heuristic)
                     threat_text = src_ip + THREAT_INFIX + _ + info;
                 else
@@ -539,9 +565,9 @@ function init(url, from, to) {
                 _TOTAL_EVENTS += 1;
 
                 if (!(threat_text in _THREATS))
-                    _THREATS[threat_text] = [1, [time], time, time, data];  // count, times, minTime, maxTime, (threat)data
+                    threat_data = _THREATS[threat_text] = [1, [time], time, time, data];  // count, times, minTime, maxTime, (threat)data
                 else {
-                    var threat_data = _THREATS[threat_text];
+                    threat_data = _THREATS[threat_text];
                     threat_data[0] += 1;
                     threat_data[1].push(time);
 
@@ -549,45 +575,38 @@ function init(url, from, to) {
                         threat_data[2] = time;
                     else if (time > threat_data[3])
                         threat_data[3] = time;
+                }
 
-                    _ = threat_data[4];
+                _ = threat_data[4];
 
-                    for (var j = 0; j < DOT_COLUMNS.length; j++) {
-                        var column = DOT_COLUMNS[j];
-                        if (data[column] !== _[column])
-                            if (typeof _[column] === "string") {
-                                var original = _[column];
-                                var multiple = original.match(/\((.*,.*)\)/) || original.match(/([^ ,]+,[^ ]+)/);
+                for (var j = 0; j < DOT_COLUMNS.length; j++) {
+                    var column = DOT_COLUMNS[j];
+                    var condensed = (column in DATA_CONDENSING_COLUMNS) && data[column].contains(',');
+                    if (condensed || (data[column] !== _[column])) {
+                        if (typeof _[column] === "string") {
+                            var original = _[column];
+                            _[column] = {};
 
-                                _[column] = {};
-
-                                if (multiple) {
-                                    var items = multiple[1].split(',');
-
-                                    if (original.contains('('))
-                                        for (var k = 0; k < items.length; k++)
-                                            _[column]["(" + items[k] + ")" + original.replace(multiple[0], "")] = true
-                                    else
-                                        for (var k = 0; k < items.length; k++)
-                                            _[column][items[k]] = true
+                            if (condensed) {
+                                var parts = original.split(',');
+                                for (var k = 0; k < parts.length; k++) {
+                                    _[column][parts[k]] = true;
                                 }
-                                else
-                                    _[column][original] = true;
                             }
+                            else
+                                _[column][original] = true;
+                        }
 
-                            var multiple = data[column].match(/\((.*,.*)\)/) || data[column].match(/([^ ,]+,[^ ]+)/);
-
-                            if (multiple) {
-                                var items = multiple[1].split(',');
-                                if (data[column].contains('('))
-                                    for (var k = 0; k < items.length; k++)
-                                        _[column]["(" + items[k] + ")" + data[column].replace(multiple[0], "")] = true
-                                else
-                                    for (var k = 0; k < items.length; k++)
-                                        _[column][items[k]] = true
+                        if (typeof data[column] === "string") {
+                            if (condensed) {
+                                var parts = data[column].split(',');
+                                for (var k = 0; k < parts.length; k++) {
+                                    _[column][parts[k]] = true;
+                                }
                             }
                             else
                                 _[column][data[column]] = true;
+                        }
                     }
                 }
 
@@ -613,8 +632,8 @@ function init(url, from, to) {
                     if (!(hour in _HOURS)) {
                         _HOURS[hour] = {};
 
-                        for (var type in TRAIL_TYPES)
-                            _HOURS[hour][type] = 0;
+                        for (var item in TRAIL_TYPES)
+                            _HOURS[hour][item] = 0;
                     }
 
                     _HOURS[hour][type] += 1;
@@ -727,6 +746,8 @@ function init(url, from, to) {
 
                     if (data[LOG_COLUMNS.REFERENCE].contains("(custom)"))
                         severity = SEVERITY.HIGH;
+                    else if (data[LOG_COLUMNS.INFO].contains("potential malware site"))
+                        severity = SEVERITY.MEDIUM;
                     else if (data[LOG_COLUMNS.REFERENCE].contains("malwaredomainlist"))
                         severity = SEVERITY.HIGH;
                     else if (data[LOG_COLUMNS.INFO].contains("malware distribution"))
@@ -980,7 +1001,7 @@ function copyEllipsisToClipboard(event) {
     var text = target.parent().title;
     var html = target.parent().html();
     var left = html.search(/^<[^>]*ellipsis/) !== -1;
-    var common = html.replace(/<[^>]+>/g, "");
+    var common = html.replace(/<span class="ipcat">[^<]+<\/span>/g, "").replace(/<[^>]+>/g, "");
     if (!text) {
         var tooltip = $(".ui-tooltip");
         if (tooltip.length > 0) {
@@ -1169,7 +1190,7 @@ function initDetails() {
 
                     data = data.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-                    if ((data.indexOf(',') > -1) || ((info.indexOf(SUSPICIOUS_THREAT_INFIX) > -1) || data.length > 80) && (data.indexOf('(') > -1) || (data.replace(/\([^)]+\)/g, "").length > LONG_TRAIL_THRESHOLD)) {
+                    if ((data.indexOf(',') > -1) || (data.replace(/&#\d+;/g, "|").length > LONG_TRAIL_THRESHOLD)) {
                         var common = "";
                         var title = "";
                         var left = false;
@@ -1209,7 +1230,7 @@ function initDetails() {
                         }
 
                         // Reference: https://stackoverflow.com/questions/3340802/add-line-break-within-tooltips
-                        title = title.replace(/([^\s]{50})/g, "$1&#013;");
+                        title = title.replace(TOOLTIP_FOLDING_REGEX, "$1&#10;");
 
                         common = '<span class="trail-text">' + common + '</span>';
 
@@ -1218,8 +1239,15 @@ function initDetails() {
                         else
                             data = common + "<span title=\"" + title + "\" class='ellipsis'></span>";
                     }
-                    else
+                    else {
+                        if (REPLACE_SINGLE_CLOUD_WITH_BRACES)
+                            data = data.replace('(', '{').replace(')', '}');
+
+                        if (info.contains("sinkholed"))
+                            data = data.replace('(', '').replace(')', '');
+
                         data = '<span class="trail-text">' + data + '</span>';
+                    }
 
                     return data;
                 },
@@ -1436,7 +1464,7 @@ function initDetails() {
                     $.ajax("https://stat.ripe.net/data/dns-chain/data.json?resource=" + ip, { dataType:"jsonp", ip: ip})
                     .done(function(json) {
                         var _ = json.data.reverse_nodes[this.ip];
-                        if ((_.length === 0) || (_ === "localhost")) {
+                        if ((typeof _ === "undefined") || (_.length === 0) || (_ === "localhost")) {
                             _ = "-";
                         }
                         _ = String(_);
@@ -1568,13 +1596,13 @@ function initDetails() {
                             if ((typeof json.data.locations !== "undefined") && (json.data.locations.length > 0) && (json.data.locations[0].country !== "ANO")) {
                                 IP_COUNTRY[this.ip] = json.data.locations[0].country.toLowerCase().split('-')[0];
                                 img = '<img src="images/blank.gif" class="flag flag-' + IP_COUNTRY[this.ip] + '" title="' + IP_COUNTRY[this.ip].toUpperCase() + '">';
-                                span_ip.tooltip(options);
                             }
                             else {
                                 IP_COUNTRY[this.ip] = "unknown";
                                 img = '<img src="images/blank.gif" class="flag flag-unknown" title="UNKNOWN">';
                             }
 
+                            span_ip.tooltip(options);
                             this.cell.html("").append(span_ip).append($(img).tooltip());
                         });
                     }
@@ -1621,7 +1649,7 @@ function initDetails() {
         if (event.target.classList.contains("trail-text")) {
             clearTimeout(SEARCH_TIP_TIMER);
             SEARCH_TIP_TIMER = setTimeout(function(cell, event) {
-                if ($(".ui-tooltip").length === 0) {
+                if ((event.buttons === 0) && ($(".ui-tooltip").length === 0)) {
                     var query = cell[0].innerHTML.replace(/<span class="ipcat.+span>/g, "").replace(/<[^>]+>/g, "").replace(/[()]/g, "").split('/')[0];
                     $(".searchtip").remove();
                     $("body").append(
@@ -1642,6 +1670,11 @@ function initDetails() {
         }
     });
 
+    details.off("click", ".trail");
+    details.on("click", ".trail", function(event) {
+        clearTimeout(SEARCH_TIP_TIMER);
+    });
+
     details.off("dblclick");  // clear previous
     details.on("dblclick", "td", function (){
         var table = $('#details').dataTable();
@@ -1651,6 +1684,8 @@ function initDetails() {
             filter = $(this).find(".info-input")[0].value;
         else if ($(this).find(".time-day").length > 0)
             filter = $(this).find("div")[0].lastChild.textContent;
+        else if ($(this).find(".trail-text").length > 0)
+            filter = $(this).find(".trail-text")[0].lastChild.textContent.replace(/\([^)]+\)/g, "");
         else if ($(this).find(".duplicates").length > 0)
             filter = this.innerHTML.replace(/<span.+/g, " ").replace(/<.+?>/g, " ");
         else if (this.innerHTML.indexOf("ellipsis") > -1) {
@@ -1686,7 +1721,7 @@ function initDetails() {
             if (event.target.classList.contains("tag"))
                 appendFilter(event.target.innerHTML, event, true);
         }
-        else if (event.button === 2) {  // right mouse button
+        else if (event.button === 2) {  // right mouse button/click
             stopPropagation(event);
         }
     });

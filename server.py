@@ -18,14 +18,18 @@ import os
 import platform
 import subprocess
 import threading
+import time
 import traceback
 
+from core.common import check_connection
 from core.common import check_sudo
 from core.httpd import start_httpd
+from core.log import create_log_directory
 from core.log import log_error
 from core.log import start_logd
 from core.settings import config
 from core.settings import read_config
+from core.settings import CHECK_CONNECTION_MAX_RETRIES
 from core.settings import CONFIG_FILE
 from core.settings import NAME
 from core.settings import VERSION
@@ -61,10 +65,23 @@ def main():
             exit("[!] invalid configuration value for 'SSL_PEM' ('%s')\n[?] (hint: \"%s\")" % (config.SSL_PEM, hint))
 
     def update_timer():
-        if config.USE_SERVER_UPDATE_TRAILS:
-            update_trails()
+        retries = 0
+        while retries < CHECK_CONNECTION_MAX_RETRIES and not check_connection():
+            sys.stdout.write("[!] can't update because of lack of network connection (waiting..." if not retries else '.')
+            sys.stdout.flush()
+            time.sleep(10)
+            retries += 1
 
-        update_ipcat()
+        if retries:
+            print(")")
+
+        if retries == CHECK_CONNECTION_MAX_RETRIES:
+            print("[x] going to continue without update")
+        else:
+            if config.USE_SERVER_UPDATE_TRAILS:
+                update_trails()
+
+            update_ipcat()
 
         thread = threading.Timer(config.UPDATE_PERIOD, update_timer)
         thread.daemon = True
@@ -74,6 +91,7 @@ def main():
         if check_sudo() is False:
             exit("[!] please run '%s' with sudo/Administrator privileges when using 'UDP_ADDRESS' configuration value" % __file__)
 
+        create_log_directory()
         start_logd(address=config.UDP_ADDRESS, port=config.UDP_PORT, join=False)
 
     try:
@@ -91,6 +109,9 @@ if __name__ == "__main__":
         show_final = False
 
         print(ex)
+    except IOError:
+        show_final = False
+        log_error("\n\n[!] session abruptly terminated\n[?] (hint: \"https://stackoverflow.com/a/20997655\")")
     except Exception:
         msg = "\r[!] unhandled exception occurred ('%s')" % sys.exc_info()[1]
         msg += "\n[x] please report the following details at 'https://github.com/stamparm/maltrail/issues':\n---\n'%s'\n---" % traceback.format_exc()
